@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>claw2 Mini App</title>
+<!-- BUILD: v2.2.0-vadfix -->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
@@ -225,15 +226,18 @@
   let audioCtx     = null;
   let analyser     = null;
   let vadTimer     = null;
-  let isRecording  = false;
-  let selectedMode = null;
-  let chunks       = [];
-  let recStartMs   = 0;
+  let isRecording    = false;
+  let speechDetected = false;   // latch：連續 SPEECH_LATCH_MS 有聲才設 true
+  let selectedMode   = null;
+  let chunks         = [];
+  let recStartMs     = 0;
 
-  const VAD_SILENCE_MS = 1500;
-  const VAD_THRESHOLD  = 10;
-  const VAD_CHECK_MS   = 100;
-  const MIN_RECORD_MS  = 500;
+  const VAD_SILENCE_MS           = 1500;   // 偵測到語音後，靜音持續 1.5s → 停止
+  const VAD_THRESHOLD            = 10;     // 128 bins 均值 ≥ 10 算有聲音
+  const VAD_CHECK_MS             = 100;    // 每 100ms 檢查一次
+  const SPEECH_LATCH_MS          = 200;    // 連續 ≥ 200ms 有聲音 → 鎖定 speechDetected
+  const MAX_WAIT_FOR_SPEECH_MS   = 7000;   // 等了 7s 仍無語音 → 中止、不上傳
+  const MIN_BLOB_BYTES           = 3000;   // blob < 3KB = 純靜音，不上傳
 
   /* ── Permission ── */
   function initAudioContext() {
@@ -300,9 +304,9 @@
     return '';
   }
 
-  function startRecording() {
+  async function startRecording() {
     if (!mediaStream || isRecording) return;
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
 
     const source = audioCtx.createMediaStreamSource(mediaStream);
     source.connect(analyser);
@@ -317,7 +321,8 @@
       recorder = new MediaRecorder(mediaStream);
     }
 
-    chunks = [];
+    chunks         = [];
+    speechDetected = false;
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = handleRecordingDone;
 
@@ -348,7 +353,8 @@
   function startVAD() {
     const bufLen = analyser.frequencyBinCount;
     const data   = new Uint8Array(bufLen);
-    let silenceStart = null;
+    let silenceStart        = null;
+    let speechConsecutiveMs = 0;   // 連續有聲窗口累計，達 SPEECH_LATCH_MS → latch
 
     vadTimer = setInterval(() => {
       if (!isRecording) return;
@@ -359,12 +365,24 @@
       levelRing.style.borderColor = `rgba(255, 59, 48, ${0.2 + intensity * 0.6})`;
       levelRing.style.transform   = `scale(${1 + intensity * 0.08})`;
 
-      const elapsed = Date.now() - recStartMs;
-      if (avg < VAD_THRESHOLD && elapsed > MIN_RECORD_MS) {
-        if (!silenceStart) silenceStart = Date.now();
-        if (Date.now() - silenceStart >= VAD_SILENCE_MS) stopRecording();
-      } else {
+      if (avg >= VAD_THRESHOLD) {
+        // ── 有聲音 ──
+        speechConsecutiveMs += VAD_CHECK_MS;
+        if (!speechDetected && speechConsecutiveMs >= SPEECH_LATCH_MS) {
+          speechDetected = true;   // 連續 200ms 有聲 → 確認是真實語音
+        }
         silenceStart = null;
+      } else {
+        // ── 靜音 ──
+        speechConsecutiveMs = 0;
+        if (speechDetected) {
+          // 語音已開始 → 計靜音時長，超過門檻才停
+          if (!silenceStart) silenceStart = Date.now();
+          if (Date.now() - silenceStart >= VAD_SILENCE_MS) stopRecording();
+        } else if (Date.now() - recStartMs >= MAX_WAIT_FOR_SPEECH_MS) {
+          // 一直沒聽到語音 → 中止，speechDetected 仍 false，handleRecordingDone 不上傳
+          stopRecording();
+        }
       }
     }, VAD_CHECK_MS);
   }
@@ -374,6 +392,18 @@
     const elapsed = Date.now() - recStartMs;
     if (!chunks.length || elapsed < 500) {
       updateStatus('錄音太短，請再試一次');
+      return;
+    }
+
+    // 提前建 blob，以便量 size
+    const mimeType = recorder.mimeType || 'audio/webm';
+    const ext      = mimeType.includes('mp4') ? 'm4a' : 'webm';
+    const blob     = new Blob(chunks, { type: mimeType });
+
+    // 無語音擋板：speechDetected latch 未觸發 或 blob 過小（純靜音）→ 丟棄，不上傳
+    if (!speechDetected || blob.size < MIN_BLOB_BYTES) {
+      updateStatus('沒聽到聲音，請再說一次');
+      resetMic();
       return;
     }
 
@@ -398,11 +428,6 @@
     updateStatus('處理中…');
 
     try {
-      const mimeType = recorder.mimeType || 'audio/webm';
-      // Pick a sensible extension for Whisper; ffmpeg doesn't care but it's cleaner
-      const ext  = mimeType.includes('mp4') ? 'm4a' : 'webm';
-      const blob = new Blob(chunks, { type: mimeType });
-
       const form = new FormData();
       form.append('audio',     blob, `voice.${ext}`);
       form.append('mode',      selectedMode || '');
@@ -433,6 +458,7 @@
 
   /* ── Helpers ── */
   function resetMic() {
+    speechDetected = false;
     micBtn.classList.remove('sending', 'recording');
     micBtn.textContent = '🎙';
   }
