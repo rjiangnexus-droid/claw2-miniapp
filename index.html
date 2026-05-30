@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>claw2 Mini App</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #1a1a2e);
+    --fg: var(--tg-theme-text-color, #e0e0e0);
+    --hint: var(--tg-theme-hint-color, #888);
+    --btn: var(--tg-theme-button-color, #3a86ff);
+    --btn-text: var(--tg-theme-button-text-color, #fff);
+    --secondary-bg: var(--tg-theme-secondary-bg-color, #16213e);
+    --mic-size: 120px;
+    --rec-glow: rgba(255, 59, 48, .45);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* ── Status bar ── */
+  #status-bar {
+    text-align: center;
+    padding: 14px 16px 6px;
+    font-size: 13px;
+    color: var(--hint);
+    min-height: 40px;
+  }
+  #status-bar .mode-tag {
+    display: inline-block;
+    background: var(--btn);
+    color: var(--btn-text);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 10px;
+    margin-right: 6px;
+    letter-spacing: .3px;
+  }
+
+  /* ── Mic area ── */
+  #mic-area {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #mic-btn {
+    width: var(--mic-size);
+    height: var(--mic-size);
+    border-radius: 50%;
+    border: none;
+    background: var(--btn);
+    color: var(--btn-text);
+    font-size: 48px;
+    cursor: pointer;
+    position: relative;
+    transition: transform .15s ease, box-shadow .2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    outline: none;
+    -webkit-appearance: none;
+  }
+  #mic-btn:active { transform: scale(.93); }
+  #mic-btn.recording {
+    background: #ff3b30;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  #mic-btn.sending {
+    background: var(--hint);
+    pointer-events: none;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--rec-glow); }
+    50% { box-shadow: 0 0 0 18px transparent; }
+  }
+
+  /* ── Level ring ── */
+  #level-ring {
+    position: absolute;
+    width: calc(var(--mic-size) + 24px);
+    height: calc(var(--mic-size) + 24px);
+    border-radius: 50%;
+    border: 3px solid transparent;
+    pointer-events: none;
+    transition: border-color .1s;
+  }
+  #level-ring.active { border-color: rgba(255, 59, 48, .5); }
+
+  /* ── Quick actions ── */
+  #actions {
+    display: flex;
+    gap: 8px;
+    padding: 0 16px 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .action-btn {
+    background: var(--secondary-bg);
+    color: var(--fg);
+    border: 1.5px solid transparent;
+    border-radius: 20px;
+    padding: 7px 13px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    outline: none;
+    -webkit-appearance: none;
+  }
+  .action-btn:active { transform: scale(.96); }
+  .action-btn.selected {
+    border-color: var(--btn);
+    background: color-mix(in srgb, var(--btn) 15%, var(--secondary-bg));
+  }
+
+  /* ── Feedback ── */
+  #feedback {
+    padding: 8px 16px 24px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--hint);
+    min-height: 56px;
+  }
+  #feedback .result {
+    background: var(--secondary-bg);
+    border-radius: 12px;
+    padding: 10px 14px;
+    display: inline-block;
+    max-width: 90%;
+    text-align: left;
+    word-break: break-word;
+  }
+  #feedback .ok  { color: #34c759; }
+  #feedback .err { color: #ff3b30; }
+
+  /* ── Permission overlay ── */
+  #perm-overlay {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 10;
+    padding: 24px;
+    text-align: center;
+  }
+  #perm-overlay.hidden { display: none; }
+  #perm-overlay button {
+    background: var(--btn);
+    color: var(--btn-text);
+    border: none;
+    border-radius: 12px;
+    padding: 12px 32px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="perm-overlay">
+  <div style="font-size:48px">🎙</div>
+  <div style="font-size:16px;line-height:1.5">需要麥克風權限才能錄音</div>
+  <button id="perm-btn">允許麥克風</button>
+</div>
+
+<div id="status-bar">點擊麥克風開始說話</div>
+
+<div id="mic-area">
+  <div style="position:relative;display:flex;align-items:center;justify-content:center">
+    <div id="level-ring"></div>
+    <button id="mic-btn" aria-label="錄音">🎙</button>
+  </div>
+</div>
+
+<div id="actions">
+  <button class="action-btn" data-mode="todo">📋 待辦</button>
+  <button class="action-btn" data-mode="note">📝 筆記</button>
+  <button class="action-btn" data-mode="calendar">📅 行事曆</button>
+  <button class="action-btn" data-mode="expense">💰 記帳</button>
+  <button class="action-btn" data-mode="reminder">⏰ 提醒</button>
+  <button class="action-btn" data-mode="query">🔍 查詢</button>
+</div>
+
+<div id="feedback"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── Telegram WebApp ── */
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  /* ── Config: VOICE_SERVER_URL from ?server= query param (set by bot menu button) ── */
+  const _params = new URLSearchParams(window.location.search);
+  const VOICE_SERVER_URL = (_params.get('server') || '').replace(/\/$/, '');
+
+  /* ── DOM ── */
+  const micBtn      = document.getElementById('mic-btn');
+  const levelRing   = document.getElementById('level-ring');
+  const statusBar   = document.getElementById('status-bar');
+  const feedback    = document.getElementById('feedback');
+  const permOverlay = document.getElementById('perm-overlay');
+  const permBtn     = document.getElementById('perm-btn');
+  const actionBtns  = document.querySelectorAll('.action-btn');
+
+  /* ── State ── */
+  let mediaStream  = null;
+  let recorder     = null;
+  let audioCtx     = null;
+  let analyser     = null;
+  let vadTimer     = null;
+  let isRecording  = false;
+  let selectedMode = null;
+  let chunks       = [];
+  let recStartMs   = 0;
+
+  const VAD_SILENCE_MS = 1500;
+  const VAD_THRESHOLD  = 10;
+  const VAD_CHECK_MS   = 100;
+  const MIN_RECORD_MS  = 500;
+
+  /* ── Permission ── */
+  function initAudioContext() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser  = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+  }
+
+  async function requestMic() {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      permOverlay.classList.add('hidden');
+      initAudioContext();
+    } catch (e) {
+      permBtn.textContent = '請到設定中開啟麥克風權限';
+      permBtn.disabled = true;
+    }
+  }
+  permBtn.addEventListener('click', requestMic);
+
+  navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    .then(stream => {
+      mediaStream = stream;
+      permOverlay.classList.add('hidden');
+      initAudioContext();
+    })
+    .catch(() => {});
+
+  /* ── Quick action buttons ── */
+  actionBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      if (selectedMode === mode) {
+        selectedMode = null;
+        btn.classList.remove('selected');
+      } else {
+        actionBtns.forEach(b => b.classList.remove('selected'));
+        selectedMode = mode;
+        btn.classList.add('selected');
+      }
+      updateStatus();
+    });
+  });
+
+  /* ── Mic button ── */
+  micBtn.addEventListener('click', () => {
+    if (isRecording) stopRecording();
+    else             startRecording();
+  });
+
+  /* ── Recording ── */
+  function getMimeType() {
+    // Android: webm/opus preferred; iOS WKWebView: only mp4/aac
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      '',
+    ];
+    for (const m of candidates) {
+      if (!m || MediaRecorder.isTypeSupported(m)) return m;
+    }
+    return '';
+  }
+
+  function startRecording() {
+    if (!mediaStream || isRecording) return;
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    source.connect(analyser);
+
+    const mimeType = getMimeType();
+    const opts = { audioBitsPerSecond: 24000 };  // 24 kbps — good quality, small files
+    if (mimeType) opts.mimeType = mimeType;
+
+    try {
+      recorder = new MediaRecorder(mediaStream, opts);
+    } catch (_) {
+      recorder = new MediaRecorder(mediaStream);
+    }
+
+    chunks = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = handleRecordingDone;
+
+    recorder.start(200);
+    isRecording = true;
+    recStartMs  = Date.now();
+
+    micBtn.classList.add('recording');
+    micBtn.textContent = '⏹';
+    levelRing.classList.add('active');
+    feedback.innerHTML = '';
+    updateStatus('🔴 錄音中…');
+
+    startVAD();
+  }
+
+  function stopRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+    clearInterval(vadTimer);
+    micBtn.classList.remove('recording');
+    micBtn.textContent = '🎙';
+    levelRing.classList.remove('active');
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+  }
+
+  /* ── VAD ── */
+  function startVAD() {
+    const bufLen = analyser.frequencyBinCount;
+    const data   = new Uint8Array(bufLen);
+    let silenceStart = null;
+
+    vadTimer = setInterval(() => {
+      if (!isRecording) return;
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / bufLen;
+
+      const intensity = Math.min(avg / 60, 1);
+      levelRing.style.borderColor = `rgba(255, 59, 48, ${0.2 + intensity * 0.6})`;
+      levelRing.style.transform   = `scale(${1 + intensity * 0.08})`;
+
+      const elapsed = Date.now() - recStartMs;
+      if (avg < VAD_THRESHOLD && elapsed > MIN_RECORD_MS) {
+        if (!silenceStart) silenceStart = Date.now();
+        if (Date.now() - silenceStart >= VAD_SILENCE_MS) stopRecording();
+      } else {
+        silenceStart = null;
+      }
+    }, VAD_CHECK_MS);
+  }
+
+  /* ── Send via fetch POST to VOICE_SERVER_URL/voice ── */
+  async function handleRecordingDone() {
+    const elapsed = Date.now() - recStartMs;
+    if (!chunks.length || elapsed < 500) {
+      updateStatus('錄音太短，請再試一次');
+      return;
+    }
+
+    if (!VOICE_SERVER_URL) {
+      showErr('伺服器未設定，請關閉後重新從 bot 選單開啟');
+      resetMic();
+      return;
+    }
+
+    const initData = tg ? (tg.initData || '') : '';
+    const chatId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
+      ? tg.initDataUnsafe.user.id
+      : null;
+    if (!initData || !chatId) {
+      showErr('請從 Telegram 開啟此頁面');
+      resetMic();
+      return;
+    }
+
+    micBtn.classList.add('sending');
+    micBtn.textContent = '⏳';
+    updateStatus('處理中…');
+
+    try {
+      const mimeType = recorder.mimeType || 'audio/webm';
+      // Pick a sensible extension for Whisper; ffmpeg doesn't care but it's cleaner
+      const ext  = mimeType.includes('mp4') ? 'm4a' : 'webm';
+      const blob = new Blob(chunks, { type: mimeType });
+
+      const form = new FormData();
+      form.append('audio',     blob, `voice.${ext}`);
+      form.append('mode',      selectedMode || '');
+      form.append('init_data', initData);
+
+      const resp = await fetch(`${VOICE_SERVER_URL}/voice`, {
+        method: 'POST',
+        body:   form,
+      });
+
+      if (!resp.ok) {
+        let msg = `伺服器錯誤 ${resp.status}`;
+        try { const j = await resp.json(); if (j.message) msg = j.message; } catch (_) {}
+        showErr(msg);
+        resetMic();
+        return;
+      }
+
+      tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('success');
+      showOk('✓ 傳送成功，請查看 Telegram 回覆');
+      resetMic();
+
+    } catch (e) {
+      showErr(e.message || '網路錯誤，請重試');
+      resetMic();
+    }
+  }
+
+  /* ── Helpers ── */
+  function resetMic() {
+    micBtn.classList.remove('sending', 'recording');
+    micBtn.textContent = '🎙';
+  }
+
+  function showErr(msg) {
+    feedback.innerHTML = `<span class="err">✗ ${escHtml(msg)}</span>`;
+    tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
+  }
+
+  function showOk(msg) {
+    feedback.innerHTML = `<span class="ok">${escHtml(msg)}</span>`;
+  }
+
+  function updateStatus(msg) {
+    if (msg) { statusBar.innerHTML = msg; return; }
+    if (selectedMode) {
+      statusBar.innerHTML =
+        `<span class="mode-tag">${modeLabel(selectedMode)}</span>點擊麥克風開始說話`;
+    } else {
+      statusBar.textContent = '點擊麥克風開始說話';
+    }
+  }
+
+  function modeLabel(m) {
+    return { todo:'待辦', note:'筆記', calendar:'行事曆', expense:'記帳', reminder:'提醒', query:'查詢' }[m] || m;
+  }
+
+  function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+})();
+</script>
+</body>
+</html>
